@@ -46,8 +46,8 @@ contract PoolTest is Test {
         lpFee = 3000;
         tickSpacing = 60;
 
-        deal(currency0, address(this), 1000e18);
-        deal(currency1, address(this), 1000e6);
+        deal(currency0, address(this), 10000e18);
+        deal(currency1, address(this), 10000e6);
     }
 
     function test_PoolAndInitialize() public {
@@ -176,9 +176,16 @@ contract PoolTest is Test {
         uint256 amount1MaxUpper = 1000e6;
 
         uint128 liquidityUpper = PRBLiquidityAmounts.getLiquidityForAmounts(startingPrice, sqrtPriceX96ALower, sqrtPriceX96BUpper, amount0MaxUpper, amount1MaxUpper);
+        
+        console.log("Original amount0MaxUpper:", amount0MaxUpper);
+        console.log("Original amount1MaxUpper:", amount1MaxUpper);
         (amount0MaxUpper, amount1MaxUpper) = PRBLiquidityAmounts.getAmountsForLiquidity(startingPrice, sqrtPriceX96ALower, sqrtPriceX96BUpper, liquidityUpper);
+        
+        console.log("Recalculated amount0MaxUpper:", amount0MaxUpper);
+        console.log("Recalculated amount1MaxUpper:", amount1MaxUpper);
 
-        mintParams[0] = abi.encode(pool, tickSingleUpLower, tickSingleUpUpper, liquidityUpper, amount0MaxUpper, amount1MaxUpper, address(this), "");
+
+        mintParams[0] = abi.encode(pool, tickSingleUpLower, tickSingleUpUpper, liquidityUpper, amount0MaxUpper + 1, amount1MaxUpper, address(this), "");
         mintParams[1] = abi.encode(pool.currency0, pool.currency1);
         
         params = new bytes[](1);
