@@ -2,29 +2,34 @@
 pragma solidity ^0.8.13;
 
 import {Test, console} from "forge-std/Test.sol";
-import {PoolKey} from "@v4-core/types/PoolKey.sol";
-import {IPoolInitializer_v4} from "@v4-periphery/interfaces/IPoolInitializer_v4.sol";
+import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {IPoolInitializer_v4} from
+    "@v4-periphery/interfaces/IPoolInitializer_v4.sol";
 import {PRBLiquidityAmounts} from "../src/libraries/PRBLiquidityAmounts.sol";
 import {PriceMath} from "../src/libraries/PriceMath.sol";
-import {Currency} from "@v4-core/types/Currency.sol";
-import {IHooks} from "@v4-core/interfaces/IHooks.sol";
-import {IPoolManager} from "@v4-core/interfaces/IPoolManager.sol";
+import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
+import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
+import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IPositionManager} from "@v4-periphery/interfaces/IPositionManager.sol";
 import {Actions} from "@v4-periphery/libraries/Actions.sol";
-import {TickMath} from "@v4-core/libraries/TickMath.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IAllowanceTransfer} from "permit2/src/interfaces/IAllowanceTransfer.sol";
 import {MockERC20} from "../src/mocks/MockToken.sol";
 import {MockUSD} from "../src/mocks/MockUSD.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import {SwapRouter} from "../src/SwapV4.sol";
 
 contract PoolTest is Test {
-
-    IPoolManager public immutable poolManager = IPoolManager(0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32);
-    IPositionManager public immutable posm = IPositionManager(0xd88F38F930b7952f2DB2432Cb002E7abbF3dD869);
-    IAllowanceTransfer public immutable permit2 = IAllowanceTransfer(0x000000000022D473030F116dDEE9F6B43aC78BA3);
+    IPoolManager public immutable poolManager =
+        IPoolManager(0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32);
+    IPositionManager public immutable posm =
+        IPositionManager(0xd88F38F930b7952f2DB2432Cb002E7abbF3dD869);
+    IAllowanceTransfer public immutable permit2 =
+        IAllowanceTransfer(0x000000000022D473030F116dDEE9F6B43aC78BA3);
     IPositionManager public immutable positionManager = posm;
-
+    address public immutable router = 0xA51afAFe0263b40EdaEf0Df8781eA9aa03E381a3; 
+    SwapRouter public swapRouter;
     MockERC20 mockToken;
     MockUSD mockUSD;
     address currency0;
@@ -42,13 +47,17 @@ contract PoolTest is Test {
 
         currency0 = address(mockToken);
         currency1 = address(mockUSD);
-        
 
         lpFee = 3000;
         tickSpacing = 60;
 
         deal(currency0, address(this), 10000e18);
         deal(currency1, address(this), 10000e6);
+
+        swapRouter = new SwapRouter(router, address(poolManager), address(permit2));
+    
+        deal(currency0, address(swapRouter), 10000e18);
+        deal(currency1, address(swapRouter), 10000e6);
     }
 
     function test_PoolAndInitialize() public {
@@ -65,10 +74,9 @@ contract PoolTest is Test {
     }
 
     function test_PoolAndInitialize_Multicall() public {
-
         bytes[] memory params = new bytes[](2);
 
-         PoolKey memory pool = PoolKey({
+        PoolKey memory pool = PoolKey({
             currency0: Currency.wrap(currency0),
             currency1: Currency.wrap(currency1),
             fee: lpFee,
@@ -77,32 +85,47 @@ contract PoolTest is Test {
         });
 
         params[0] = abi.encodeWithSelector(
-        IPoolInitializer_v4.initializePool.selector,
-        pool,
-        startingPrice
+            IPoolInitializer_v4.initializePool.selector, pool, startingPrice
         );
 
-        bytes memory actions = abi.encodePacked(uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR));
+        bytes memory actions = abi.encodePacked(
+            uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR)
+        );
 
         // Convert sqrt price to tick
         int24 currentTick = TickMath.getTickAtSqrtPrice(startingPrice);
-        int24 tickLower = (currentTick / tickSpacing * tickSpacing) - 10 * tickSpacing; // 1000 ticks below current price
-        int24 tickUpper = (currentTick / tickSpacing * tickSpacing) + 10 * tickSpacing; // 1000 ticks above current price
+        int24 tickLower =
+            (currentTick / tickSpacing * tickSpacing) - 10 * tickSpacing; // 1000 ticks below current price
+        int24 tickUpper =
+            (currentTick / tickSpacing * tickSpacing) + 10 * tickSpacing; // 1000 ticks above current price
 
         uint160 sqrtPriceX96A = TickMath.getSqrtPriceAtTick(tickLower);
         uint160 sqrtPriceX96B = TickMath.getSqrtPriceAtTick(tickUpper);
         uint256 amount0Max = 1000e18;
         uint256 amount1Max = 1000e6;
 
-        uint128 liquidity = PRBLiquidityAmounts.getLiquidityForAmounts(startingPrice, sqrtPriceX96A, sqrtPriceX96B, amount0Max, amount1Max);
+        uint128 liquidity = PRBLiquidityAmounts.getLiquidityForAmounts(
+            startingPrice, sqrtPriceX96A, sqrtPriceX96B, amount0Max, amount1Max
+        );
 
         bytes[] memory mintParams = new bytes[](2);
-        mintParams[0] = abi.encode(pool, tickLower, tickUpper, liquidity, amount0Max, amount1Max, address(this), "");
+        mintParams[0] = abi.encode(
+            pool,
+            tickLower,
+            tickUpper,
+            liquidity,
+            amount0Max,
+            amount1Max,
+            address(this),
+            ""
+        );
         mintParams[1] = abi.encode(pool.currency0, pool.currency1);
 
         uint256 deadline = block.timestamp + 3600; // 1 hour deadline
         params[1] = abi.encodeWithSelector(
-        posm.modifyLiquidities.selector, abi.encode(actions, mintParams), deadline
+            posm.modifyLiquidities.selector,
+            abi.encode(actions, mintParams),
+            deadline
         );
 
         // approve permit2 as a spender
@@ -110,8 +133,18 @@ contract PoolTest is Test {
         IERC20(currency1).approve(address(permit2), type(uint256).max);
 
         // approve `PositionManager` as a spender
-        permit2.approve(currency0, address(positionManager), type(uint160).max, type(uint48).max);
-        permit2.approve(currency1, address(positionManager), type(uint160).max, type(uint48).max);
+        permit2.approve(
+            currency0,
+            address(positionManager),
+            type(uint160).max,
+            type(uint48).max
+        );
+        permit2.approve(
+            currency1,
+            address(positionManager),
+            type(uint160).max,
+            type(uint48).max
+        );
 
         posm.multicall(params);
     }
@@ -119,7 +152,7 @@ contract PoolTest is Test {
     function test_PoolAndInitialize_Multicall_Single() public {
         bytes[] memory params = new bytes[](2);
 
-         PoolKey memory pool = PoolKey({
+        PoolKey memory pool = PoolKey({
             currency0: Currency.wrap(currency0),
             currency1: Currency.wrap(currency1),
             fee: lpFee,
@@ -128,33 +161,47 @@ contract PoolTest is Test {
         });
 
         params[0] = abi.encodeWithSelector(
-        IPoolInitializer_v4.initializePool.selector,
-        pool,
-        startingPrice
+            IPoolInitializer_v4.initializePool.selector, pool, startingPrice
         );
 
-        bytes memory actions = abi.encodePacked(uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR));
+        bytes memory actions = abi.encodePacked(
+            uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR)
+        );
 
         // Convert sqrt price to tick
         int24 currentTick = TickMath.getTickAtSqrtPrice(startingPrice);
-        int24 tickLower = (currentTick / tickSpacing * tickSpacing) - 10 * tickSpacing; // 1000 ticks below current price
-        int24 tickUpper = (currentTick / tickSpacing * tickSpacing) + 10 * tickSpacing; // 1000 ticks above current price
+        int24 tickLower =
+            (currentTick / tickSpacing * tickSpacing) - 10 * tickSpacing; // 1000 ticks below current price
+        int24 tickUpper =
+            (currentTick / tickSpacing * tickSpacing) + 10 * tickSpacing; // 1000 ticks above current price
 
         uint160 sqrtPriceX96A = TickMath.getSqrtPriceAtTick(tickLower);
         uint160 sqrtPriceX96B = TickMath.getSqrtPriceAtTick(tickUpper);
         uint256 amount0Max = 1000e18;
         uint256 amount1Max = 1000e6;
 
-        uint128 liquidity = PRBLiquidityAmounts.getLiquidityForAmounts(startingPrice, sqrtPriceX96A, sqrtPriceX96B, amount0Max, amount1Max);
-
+        uint128 liquidity = PRBLiquidityAmounts.getLiquidityForAmounts(
+            startingPrice, sqrtPriceX96A, sqrtPriceX96B, amount0Max, amount1Max
+        );
 
         bytes[] memory mintParams = new bytes[](2);
-        mintParams[0] = abi.encode(pool, tickLower, tickUpper, liquidity, amount0Max, amount1Max, address(this), "");
+        mintParams[0] = abi.encode(
+            pool,
+            tickLower,
+            tickUpper,
+            liquidity,
+            amount0Max,
+            amount1Max,
+            address(this),
+            ""
+        );
         mintParams[1] = abi.encode(pool.currency0, pool.currency1);
 
         uint256 deadline = block.timestamp + 3600; // 1 hour deadline
         params[1] = abi.encodeWithSelector(
-        posm.modifyLiquidities.selector, abi.encode(actions, mintParams), deadline
+            posm.modifyLiquidities.selector,
+            abi.encode(actions, mintParams),
+            deadline
         );
 
         // approve permit2 as a spender
@@ -162,36 +209,71 @@ contract PoolTest is Test {
         IERC20(currency1).approve(address(permit2), type(uint256).max);
 
         // approve `PositionManager` as a spender
-        permit2.approve(currency0, address(positionManager), type(uint160).max, type(uint48).max);
-        permit2.approve(currency1, address(positionManager), type(uint160).max, type(uint48).max);
+        permit2.approve(
+            currency0,
+            address(positionManager),
+            type(uint160).max,
+            type(uint48).max
+        );
+        permit2.approve(
+            currency1,
+            address(positionManager),
+            type(uint160).max,
+            type(uint48).max
+        );
 
         posm.multicall(params);
 
-        int24 tickSingleUpUpper = (currentTick / tickSpacing * tickSpacing) + 10 * tickSpacing;
-        int24 tickSingleUpLower =  tickSingleUpUpper - (5 * tickSpacing);
+        int24 tickSingleUpUpper =
+            (currentTick / tickSpacing * tickSpacing) + 10 * tickSpacing;
+        int24 tickSingleUpLower = tickSingleUpUpper - (5 * tickSpacing);
 
-        uint160 sqrtPriceX96ALower = TickMath.getSqrtPriceAtTick(tickSingleUpLower);
-        uint160 sqrtPriceX96BUpper = TickMath.getSqrtPriceAtTick(tickSingleUpUpper);
+        uint160 sqrtPriceX96ALower =
+            TickMath.getSqrtPriceAtTick(tickSingleUpLower);
+        uint160 sqrtPriceX96BUpper =
+            TickMath.getSqrtPriceAtTick(tickSingleUpUpper);
 
         uint256 amount0MaxUpper = 1000e18;
         uint256 amount1MaxUpper = 1000e6;
 
-        uint128 liquidityUpper = PRBLiquidityAmounts.getLiquidityForAmounts(startingPrice, sqrtPriceX96ALower, sqrtPriceX96BUpper, amount0MaxUpper, amount1MaxUpper);
-        
+        uint128 liquidityUpper = PRBLiquidityAmounts.getLiquidityForAmounts(
+            startingPrice,
+            sqrtPriceX96ALower,
+            sqrtPriceX96BUpper,
+            amount0MaxUpper,
+            amount1MaxUpper
+        );
+
         console.log("Original amount0MaxUpper:", amount0MaxUpper);
         console.log("Original amount1MaxUpper:", amount1MaxUpper);
-        (amount0MaxUpper, amount1MaxUpper) = PRBLiquidityAmounts.getAmountsForLiquidity(startingPrice, sqrtPriceX96ALower, sqrtPriceX96BUpper, liquidityUpper);
-        
+        (amount0MaxUpper, amount1MaxUpper) = PRBLiquidityAmounts
+            .getAmountsForLiquidity(
+            startingPrice,
+            sqrtPriceX96ALower,
+            sqrtPriceX96BUpper,
+            liquidityUpper
+        );
+
         console.log("Recalculated amount0MaxUpper:", amount0MaxUpper);
         console.log("Recalculated amount1MaxUpper:", amount1MaxUpper);
 
-
-        mintParams[0] = abi.encode(pool, tickSingleUpLower, tickSingleUpUpper, liquidityUpper, amount0MaxUpper + 1, amount1MaxUpper, address(this), "");
+        mintParams[0] = abi.encode(
+            pool,
+            tickSingleUpLower,
+            tickSingleUpUpper,
+            liquidityUpper,
+            amount0MaxUpper + 1,
+            amount1MaxUpper,
+            address(this),
+            ""
+        );
         mintParams[1] = abi.encode(pool.currency0, pool.currency1);
-        
+
         params = new bytes[](1);
         params[0] = abi.encodeWithSelector(
-        posm.modifyLiquidities.selector, abi.encode(actions, mintParams), deadline
+            posm.modifyLiquidities.selector,
+            abi.encode(actions, mintParams),
+            deadline
         );
 
         posm.multicall(params);
@@ -200,7 +282,7 @@ contract PoolTest is Test {
     function test_PoolAndInitialize_Multicall_Increase() public {
         bytes[] memory params = new bytes[](2);
 
-         PoolKey memory pool = PoolKey({
+        PoolKey memory pool = PoolKey({
             currency0: Currency.wrap(currency0),
             currency1: Currency.wrap(currency1),
             fee: lpFee,
@@ -209,33 +291,47 @@ contract PoolTest is Test {
         });
 
         params[0] = abi.encodeWithSelector(
-        IPoolInitializer_v4.initializePool.selector,
-        pool,
-        startingPrice
+            IPoolInitializer_v4.initializePool.selector, pool, startingPrice
         );
 
-        bytes memory actions = abi.encodePacked(uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR));
+        bytes memory actions = abi.encodePacked(
+            uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR)
+        );
 
         // Convert sqrt price to tick
         int24 currentTick = TickMath.getTickAtSqrtPrice(startingPrice);
-        int24 tickLower = (currentTick / tickSpacing * tickSpacing) - 10 * tickSpacing; // 1000 ticks below current price
-        int24 tickUpper = (currentTick / tickSpacing * tickSpacing) + 10 * tickSpacing; // 1000 ticks above current price
+        int24 tickLower =
+            (currentTick / tickSpacing * tickSpacing) - 10 * tickSpacing; // 1000 ticks below current price
+        int24 tickUpper =
+            (currentTick / tickSpacing * tickSpacing) + 10 * tickSpacing; // 1000 ticks above current price
 
         uint160 sqrtPriceX96A = TickMath.getSqrtPriceAtTick(tickLower);
         uint160 sqrtPriceX96B = TickMath.getSqrtPriceAtTick(tickUpper);
         uint256 amount0Max = 1000e18;
         uint256 amount1Max = 1000e6;
 
-        uint128 liquidity = PRBLiquidityAmounts.getLiquidityForAmounts(startingPrice, sqrtPriceX96A, sqrtPriceX96B, amount0Max, amount1Max);
-
+        uint128 liquidity = PRBLiquidityAmounts.getLiquidityForAmounts(
+            startingPrice, sqrtPriceX96A, sqrtPriceX96B, amount0Max, amount1Max
+        );
 
         bytes[] memory mintParams = new bytes[](2);
-        mintParams[0] = abi.encode(pool, tickLower, tickUpper, liquidity, amount0Max, amount1Max, address(this), "");
+        mintParams[0] = abi.encode(
+            pool,
+            tickLower,
+            tickUpper,
+            liquidity,
+            amount0Max,
+            amount1Max,
+            address(this),
+            ""
+        );
         mintParams[1] = abi.encode(pool.currency0, pool.currency1);
 
         uint256 deadline = block.timestamp + 3600; // 1 hour deadline
         params[1] = abi.encodeWithSelector(
-        posm.modifyLiquidities.selector, abi.encode(actions, mintParams), deadline
+            posm.modifyLiquidities.selector,
+            abi.encode(actions, mintParams),
+            deadline
         );
 
         // approve permit2 as a spender
@@ -243,48 +339,92 @@ contract PoolTest is Test {
         IERC20(currency1).approve(address(permit2), type(uint256).max);
 
         // approve `PositionManager` as a spender
-        permit2.approve(currency0, address(positionManager), type(uint160).max, type(uint48).max);
-        permit2.approve(currency1, address(positionManager), type(uint160).max, type(uint48).max);
+        permit2.approve(
+            currency0,
+            address(positionManager),
+            type(uint160).max,
+            type(uint48).max
+        );
+        permit2.approve(
+            currency1,
+            address(positionManager),
+            type(uint160).max,
+            type(uint48).max
+        );
 
         posm.multicall(params);
 
-        int24 tickSingleUpUpper = (currentTick / tickSpacing * tickSpacing) + 10 * tickSpacing;
-        int24 tickSingleUpLower =  tickSingleUpUpper - (5 * tickSpacing);
+        int24 tickSingleUpUpper =
+            (currentTick / tickSpacing * tickSpacing) + 10 * tickSpacing;
+        int24 tickSingleUpLower = tickSingleUpUpper - (5 * tickSpacing);
 
-        uint160 sqrtPriceX96ALower = TickMath.getSqrtPriceAtTick(tickSingleUpLower);
-        uint160 sqrtPriceX96BUpper = TickMath.getSqrtPriceAtTick(tickSingleUpUpper);
+        uint160 sqrtPriceX96ALower =
+            TickMath.getSqrtPriceAtTick(tickSingleUpLower);
+        uint160 sqrtPriceX96BUpper =
+            TickMath.getSqrtPriceAtTick(tickSingleUpUpper);
 
         uint256 amount0MaxUpper = 1000e18;
         uint256 amount1MaxUpper = 1000e6;
 
-        uint128 liquidityUpper = PRBLiquidityAmounts.getLiquidityForAmounts(startingPrice, sqrtPriceX96ALower, sqrtPriceX96BUpper, amount0MaxUpper, amount1MaxUpper);
-        
+        uint128 liquidityUpper = PRBLiquidityAmounts.getLiquidityForAmounts(
+            startingPrice,
+            sqrtPriceX96ALower,
+            sqrtPriceX96BUpper,
+            amount0MaxUpper,
+            amount1MaxUpper
+        );
+
         console.log("Original amount0MaxUpper:", amount0MaxUpper);
         console.log("Original amount1MaxUpper:", amount1MaxUpper);
-        (amount0MaxUpper, amount1MaxUpper) = PRBLiquidityAmounts.getAmountsForLiquidity(startingPrice, sqrtPriceX96ALower, sqrtPriceX96BUpper, liquidityUpper);
-        
+        (amount0MaxUpper, amount1MaxUpper) = PRBLiquidityAmounts
+            .getAmountsForLiquidity(
+            startingPrice,
+            sqrtPriceX96ALower,
+            sqrtPriceX96BUpper,
+            liquidityUpper
+        );
+
         console.log("Recalculated amount0MaxUpper:", amount0MaxUpper);
         console.log("Recalculated amount1MaxUpper:", amount1MaxUpper);
 
-
-        mintParams[0] = abi.encode(pool, tickSingleUpLower, tickSingleUpUpper, liquidityUpper, amount0MaxUpper + 1, amount1MaxUpper, address(this), "");
+        mintParams[0] = abi.encode(
+            pool,
+            tickSingleUpLower,
+            tickSingleUpUpper,
+            liquidityUpper,
+            amount0MaxUpper + 1,
+            amount1MaxUpper,
+            address(this),
+            ""
+        );
         mintParams[1] = abi.encode(pool.currency0, pool.currency1);
-        
+
         params = new bytes[](1);
         params[0] = abi.encodeWithSelector(
-        posm.modifyLiquidities.selector, abi.encode(actions, mintParams), deadline
+            posm.modifyLiquidities.selector,
+            abi.encode(actions, mintParams),
+            deadline
         );
         uint256 tokenId = positionManager.nextTokenId();
         posm.multicall(params);
         assertEq(IERC721(address(posm)).ownerOf(tokenId), address(this));
         //INCREASE
-        actions = abi.encodePacked(uint8(Actions.INCREASE_LIQUIDITY), uint8(Actions.SETTLE_PAIR));
+        actions = abi.encodePacked(
+            uint8(Actions.INCREASE_LIQUIDITY), uint8(Actions.SETTLE_PAIR)
+        );
 
         bytes[] memory paramsIncrease = new bytes[](2);
         //parameters
         uint256 amount0Increase = 1000e18;
-        uint128 liquidityIncrease = PRBLiquidityAmounts.getLiquidityForAmounts(startingPrice, sqrtPriceX96ALower, sqrtPriceX96BUpper, amount0Increase, 0);
-        paramsIncrease[0] = abi.encode(tokenId, liquidityIncrease, amount0Increase, 0, "");
+        uint128 liquidityIncrease = PRBLiquidityAmounts.getLiquidityForAmounts(
+            startingPrice,
+            sqrtPriceX96ALower,
+            sqrtPriceX96BUpper,
+            amount0Increase,
+            0
+        );
+        paramsIncrease[0] =
+            abi.encode(tokenId, liquidityIncrease, amount0Increase, 0, "");
         paramsIncrease[1] = abi.encode(pool.currency0, pool.currency1);
 
         deadline = block.timestamp + 60;
@@ -292,15 +432,14 @@ contract PoolTest is Test {
         uint256 valueToPass = pool.currency0.isAddressZero() ? amount0Max : 0;
 
         posm.modifyLiquidities{value: valueToPass}(
-            abi.encode(actions, paramsIncrease),
-            deadline
+            abi.encode(actions, paramsIncrease), deadline
         );
     }
 
     function test_PoolAndInitialize_Multicall_Decrease() public {
         bytes[] memory params = new bytes[](2);
 
-         PoolKey memory pool = PoolKey({
+        PoolKey memory pool = PoolKey({
             currency0: Currency.wrap(currency0),
             currency1: Currency.wrap(currency1),
             fee: lpFee,
@@ -309,33 +448,47 @@ contract PoolTest is Test {
         });
 
         params[0] = abi.encodeWithSelector(
-        IPoolInitializer_v4.initializePool.selector,
-        pool,
-        startingPrice
+            IPoolInitializer_v4.initializePool.selector, pool, startingPrice
         );
 
-        bytes memory actions = abi.encodePacked(uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR));
+        bytes memory actions = abi.encodePacked(
+            uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR)
+        );
 
         // Convert sqrt price to tick
         int24 currentTick = TickMath.getTickAtSqrtPrice(startingPrice);
-        int24 tickLower = (currentTick / tickSpacing * tickSpacing) - 10 * tickSpacing; // 1000 ticks below current price
-        int24 tickUpper = (currentTick / tickSpacing * tickSpacing) + 10 * tickSpacing; // 1000 ticks above current price
+        int24 tickLower =
+            (currentTick / tickSpacing * tickSpacing) - 10 * tickSpacing; // 1000 ticks below current price
+        int24 tickUpper =
+            (currentTick / tickSpacing * tickSpacing) + 10 * tickSpacing; // 1000 ticks above current price
 
         uint160 sqrtPriceX96A = TickMath.getSqrtPriceAtTick(tickLower);
         uint160 sqrtPriceX96B = TickMath.getSqrtPriceAtTick(tickUpper);
         uint256 amount0Max = 1000e18;
         uint256 amount1Max = 1000e6;
 
-        uint128 liquidity = PRBLiquidityAmounts.getLiquidityForAmounts(startingPrice, sqrtPriceX96A, sqrtPriceX96B, amount0Max, amount1Max);
-
+        uint128 liquidity = PRBLiquidityAmounts.getLiquidityForAmounts(
+            startingPrice, sqrtPriceX96A, sqrtPriceX96B, amount0Max, amount1Max
+        );
 
         bytes[] memory mintParams = new bytes[](2);
-        mintParams[0] = abi.encode(pool, tickLower, tickUpper, liquidity, amount0Max, amount1Max, address(this), "");
+        mintParams[0] = abi.encode(
+            pool,
+            tickLower,
+            tickUpper,
+            liquidity,
+            amount0Max,
+            amount1Max,
+            address(this),
+            ""
+        );
         mintParams[1] = abi.encode(pool.currency0, pool.currency1);
 
         uint256 deadline = block.timestamp + 3600; // 1 hour deadline
         params[1] = abi.encodeWithSelector(
-        posm.modifyLiquidities.selector, abi.encode(actions, mintParams), deadline
+            posm.modifyLiquidities.selector,
+            abi.encode(actions, mintParams),
+            deadline
         );
 
         // approve permit2 as a spender
@@ -343,48 +496,92 @@ contract PoolTest is Test {
         IERC20(currency1).approve(address(permit2), type(uint256).max);
 
         // approve `PositionManager` as a spender
-        permit2.approve(currency0, address(positionManager), type(uint160).max, type(uint48).max);
-        permit2.approve(currency1, address(positionManager), type(uint160).max, type(uint48).max);
+        permit2.approve(
+            currency0,
+            address(positionManager),
+            type(uint160).max,
+            type(uint48).max
+        );
+        permit2.approve(
+            currency1,
+            address(positionManager),
+            type(uint160).max,
+            type(uint48).max
+        );
 
         posm.multicall(params);
 
-        int24 tickSingleUpUpper = (currentTick / tickSpacing * tickSpacing) + 10 * tickSpacing;
-        int24 tickSingleUpLower =  tickSingleUpUpper - (5 * tickSpacing);
+        int24 tickSingleUpUpper =
+            (currentTick / tickSpacing * tickSpacing) + 10 * tickSpacing;
+        int24 tickSingleUpLower = tickSingleUpUpper - (5 * tickSpacing);
 
-        uint160 sqrtPriceX96ALower = TickMath.getSqrtPriceAtTick(tickSingleUpLower);
-        uint160 sqrtPriceX96BUpper = TickMath.getSqrtPriceAtTick(tickSingleUpUpper);
+        uint160 sqrtPriceX96ALower =
+            TickMath.getSqrtPriceAtTick(tickSingleUpLower);
+        uint160 sqrtPriceX96BUpper =
+            TickMath.getSqrtPriceAtTick(tickSingleUpUpper);
 
         uint256 amount0MaxUpper = 1000e18;
         uint256 amount1MaxUpper = 1000e6;
 
-        uint128 liquidityUpper = PRBLiquidityAmounts.getLiquidityForAmounts(startingPrice, sqrtPriceX96ALower, sqrtPriceX96BUpper, amount0MaxUpper, amount1MaxUpper);
-        
+        uint128 liquidityUpper = PRBLiquidityAmounts.getLiquidityForAmounts(
+            startingPrice,
+            sqrtPriceX96ALower,
+            sqrtPriceX96BUpper,
+            amount0MaxUpper,
+            amount1MaxUpper
+        );
+
         console.log("Original amount0MaxUpper:", amount0MaxUpper);
         console.log("Original amount1MaxUpper:", amount1MaxUpper);
-        (amount0MaxUpper, amount1MaxUpper) = PRBLiquidityAmounts.getAmountsForLiquidity(startingPrice, sqrtPriceX96ALower, sqrtPriceX96BUpper, liquidityUpper);
-        
+        (amount0MaxUpper, amount1MaxUpper) = PRBLiquidityAmounts
+            .getAmountsForLiquidity(
+            startingPrice,
+            sqrtPriceX96ALower,
+            sqrtPriceX96BUpper,
+            liquidityUpper
+        );
+
         console.log("Recalculated amount0MaxUpper:", amount0MaxUpper);
         console.log("Recalculated amount1MaxUpper:", amount1MaxUpper);
 
-
-        mintParams[0] = abi.encode(pool, tickSingleUpLower, tickSingleUpUpper, liquidityUpper, amount0MaxUpper + 1, amount1MaxUpper, address(this), "");
+        mintParams[0] = abi.encode(
+            pool,
+            tickSingleUpLower,
+            tickSingleUpUpper,
+            liquidityUpper,
+            amount0MaxUpper + 1,
+            amount1MaxUpper,
+            address(this),
+            ""
+        );
         mintParams[1] = abi.encode(pool.currency0, pool.currency1);
-        
+
         params = new bytes[](1);
         params[0] = abi.encodeWithSelector(
-        posm.modifyLiquidities.selector, abi.encode(actions, mintParams), deadline
+            posm.modifyLiquidities.selector,
+            abi.encode(actions, mintParams),
+            deadline
         );
         uint256 tokenId = positionManager.nextTokenId();
         posm.multicall(params);
         assertEq(IERC721(address(posm)).ownerOf(tokenId), address(this));
         //INCREASE
-        actions = abi.encodePacked(uint8(Actions.INCREASE_LIQUIDITY), uint8(Actions.SETTLE_PAIR));
+        actions = abi.encodePacked(
+            uint8(Actions.INCREASE_LIQUIDITY), uint8(Actions.SETTLE_PAIR)
+        );
 
         bytes[] memory paramsIncrease = new bytes[](2);
         //parameters
         uint256 amount0Increase = 1000e18;
-        uint128 liquidityIncrease = PRBLiquidityAmounts.getLiquidityForAmounts(startingPrice, sqrtPriceX96ALower, sqrtPriceX96BUpper, amount0Increase, 0);
-        paramsIncrease[0] = abi.encode(tokenId, liquidityIncrease, amount0Increase, 0, "");
+        uint128 liquidityIncrease = PRBLiquidityAmounts.getLiquidityForAmounts(
+            startingPrice,
+            sqrtPriceX96ALower,
+            sqrtPriceX96BUpper,
+            amount0Increase,
+            0
+        );
+        paramsIncrease[0] =
+            abi.encode(tokenId, liquidityIncrease, amount0Increase, 0, "");
         paramsIncrease[1] = abi.encode(pool.currency0, pool.currency1);
 
         deadline = block.timestamp + 60;
@@ -392,55 +589,94 @@ contract PoolTest is Test {
         uint256 valueToPass = pool.currency0.isAddressZero() ? amount0Max : 0;
 
         posm.modifyLiquidities{value: valueToPass}(
-            abi.encode(actions, paramsIncrease),
-            deadline
+            abi.encode(actions, paramsIncrease), deadline
         );
 
         //Decrease
-        actions = abi.encodePacked(uint8(Actions.DECREASE_LIQUIDITY), uint8(Actions.TAKE_PAIR));
+        actions = abi.encodePacked(
+            uint8(Actions.DECREASE_LIQUIDITY), uint8(Actions.TAKE_PAIR)
+        );
         bytes[] memory paramsDecrease = new bytes[](2);
         uint256 amount0Min = 1000e18;
-        uint128 liquidityDecrease = PRBLiquidityAmounts.getLiquidityForAmounts(startingPrice, sqrtPriceX96ALower, sqrtPriceX96BUpper, amount0Increase, 0);
-        paramsDecrease[0] = abi.encode(tokenId, liquidityDecrease, amount0Min - 1, 0, "");
-        paramsDecrease[1] = abi.encode(pool.currency0, pool.currency1, address(this));
+        uint128 liquidityDecrease = PRBLiquidityAmounts.getLiquidityForAmounts(
+            startingPrice,
+            sqrtPriceX96ALower,
+            sqrtPriceX96BUpper,
+            amount0Increase,
+            0
+        );
+        paramsDecrease[0] =
+            abi.encode(tokenId, liquidityDecrease, amount0Min - 1, 0, "");
+        paramsDecrease[1] =
+            abi.encode(pool.currency0, pool.currency1, address(this));
 
         posm.modifyLiquidities{value: valueToPass}(
-            abi.encode(actions, paramsDecrease),
-            deadline
+            abi.encode(actions, paramsDecrease), deadline
         );
     }
 
-    function test_PriceConversion() public pure{
+    function test_SwapExactInput() public {
+        test_PoolAndInitialize_Multicall();
+        swapRouter.approveTokenWithPermit2(currency0, 100e18, type(uint48).max);
+        
+        // Create the pool key
+        PoolKey memory pool = PoolKey({
+            currency0: Currency.wrap(currency0),
+            currency1: Currency.wrap(currency1),
+            fee: lpFee,
+            tickSpacing: tickSpacing,
+            hooks: IHooks(address(0))
+        });
+        
+        // Set up swap parameters
+        uint128 amountIn = 1e18; // 1 token to swap
+        uint128 minAmountOut = 0; // Minimum amount out (0 for testing)
+        
+        // Execute the swap
+        uint256 amountOut = swapRouter.swapExactInputSingle(
+            pool,
+            amountIn,
+            minAmountOut
+        );
+        
+        console.log("Amount in:", amountIn);
+        console.log("Amount out:", amountOut);
+    }
+
+    function test_PriceConversion() public pure {
         // Example: Convert regular price to sqrt price
         uint256 regularPrice = 1.5e18; // 1.5:1 ratio (1.5 token1 per token0)
         uint160 sqrtPrice = PriceMath.priceToSqrtPriceX96(regularPrice);
-        
+
         console.log("Regular price:", regularPrice);
         console.log("Sqrt price:", sqrtPrice);
-        
+
         // Convert back to verify
         uint256 convertedBack = PriceMath.sqrtPriceX96ToPrice(sqrtPrice);
         console.log("Converted back:", convertedBack);
-        
+
         // Example with token amounts
         uint256 amount0 = 1000e18; // 1000 token0
         uint256 amount1 = 1500e18; // 1500 token1 (1.5:1 ratio)
-        uint160 sqrtPriceFromRatio = PriceMath.ratioToSqrtPriceX96(amount0, amount1);
-        
+        uint160 sqrtPriceFromRatio =
+            PriceMath.ratioToSqrtPriceX96(amount0, amount1);
+
         console.log("Sqrt price from ratio:", sqrtPriceFromRatio);
-        
+
         // Example with decimals
         uint256 priceWithDecimals = 1500000000000000000; // 1.5 with 18 decimals
-        uint160 sqrtPriceWithDecimals = PriceMath.priceWithDecimalsToSqrtPriceX96(
-            priceWithDecimals, 
+        uint160 sqrtPriceWithDecimals = PriceMath
+            .priceWithDecimalsToSqrtPriceX96(
+            priceWithDecimals,
             18, // token0 decimals
-            18  // token1 decimals
+            18 // token1 decimals
         );
-        
+
         console.log("Sqrt price with decimals:", sqrtPriceWithDecimals);
-        
+
         // Get common sqrt prices
-        (uint160 sqrt1_1, uint160 sqrt2_1, uint160 sqrt1_2) = PriceMath.getCommonSqrtPrices();
+        (uint160 sqrt1_1, uint160 sqrt2_1, uint160 sqrt1_2) =
+            PriceMath.getCommonSqrtPrices();
         console.log("1:1 sqrt price:", sqrt1_1);
         console.log("2:1 sqrt price:", sqrt2_1);
         console.log("1:2 sqrt price:", sqrt1_2);
