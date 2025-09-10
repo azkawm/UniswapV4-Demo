@@ -19,6 +19,9 @@ import {MockERC20} from "../src/mocks/MockToken.sol";
 import {MockUSD} from "../src/mocks/MockUSD.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {SwapRouter} from "../src/SwapV4.sol";
+import {CounterHook} from "../src/CounterHook.sol";
+import {HookMiner} from "@v4-periphery/utils/HookMiner.sol";
+import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 
 contract PoolTest is Test {
     IPoolManager public immutable poolManager =
@@ -30,15 +33,16 @@ contract PoolTest is Test {
     IPositionManager public immutable positionManager = posm;
     address public immutable router = 0xA51afAFe0263b40EdaEf0Df8781eA9aa03E381a3; 
     SwapRouter public swapRouter;
+    CounterHook public cHook;
     MockERC20 mockToken;
     MockUSD mockUSD;
     address currency0;
     address currency1;
-    uint24 lpFee;
-    int24 tickSpacing;
+    uint24 lpFee = 3000;
+    int24 tickSpacing = 60;
 
     uint160 startingPrice = 79228162514264337593543950336;
-
+    
     function setUp() public {
         vm.createSelectFork(vm.envString("ARB_MAINNET_RPC"));
 
@@ -48,8 +52,25 @@ contract PoolTest is Test {
         currency0 = address(mockToken);
         currency1 = address(mockUSD);
 
-        lpFee = 3000;
-        tickSpacing = 60;
+        //test_PoolAndInitialize();
+        // Find the correct hook address with proper permissions
+        uint160 flags = uint160(
+            Hooks.BEFORE_ADD_LIQUIDITY_FLAG |
+            Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG |
+            Hooks.BEFORE_SWAP_FLAG |
+            Hooks.AFTER_SWAP_FLAG
+        );
+        
+        (address hookAddress, bytes32 salt) = HookMiner.find(
+            address(this),
+            flags,
+            type(CounterHook).creationCode,
+            abi.encode(address(poolManager))
+        );
+        
+        // Deploy the hook to the correct address
+        cHook = new CounterHook{salt: salt}(poolManager);
+        assertEq(address(cHook), hookAddress);
 
         deal(currency0, address(this), 10000e18);
         deal(currency1, address(this), 10000e6);
@@ -73,7 +94,7 @@ contract PoolTest is Test {
         poolManager.initialize(pool, 79228162514264337593543950336);
     }
 
-    function test_PoolAndInitialize_Multicall() public {
+    function test_PoolAndInitialize_Multicall() public returns(PoolKey memory){
         bytes[] memory params = new bytes[](2);
 
         PoolKey memory pool = PoolKey({
@@ -81,7 +102,7 @@ contract PoolTest is Test {
             currency1: Currency.wrap(currency1),
             fee: lpFee,
             tickSpacing: tickSpacing,
-            hooks: IHooks(address(0))
+            hooks: IHooks(address(cHook))
         });
 
         params[0] = abi.encodeWithSelector(
@@ -147,6 +168,8 @@ contract PoolTest is Test {
         );
 
         posm.multicall(params);
+
+        return pool;
     }
 
     function test_PoolAndInitialize_Multicall_Single() public {
@@ -616,17 +639,8 @@ contract PoolTest is Test {
     }
 
     function test_SwapExactInput() public {
-        test_PoolAndInitialize_Multicall();
+        PoolKey memory pool = test_PoolAndInitialize_Multicall();
         swapRouter.approveTokenWithPermit2(currency0, 100e18, type(uint48).max);
-        
-        // Create the pool key
-        PoolKey memory pool = PoolKey({
-            currency0: Currency.wrap(currency0),
-            currency1: Currency.wrap(currency1),
-            fee: lpFee,
-            tickSpacing: tickSpacing,
-            hooks: IHooks(address(0))
-        });
         
         // Set up swap parameters
         uint128 amountIn = 1e18; // 1 token to swap
@@ -641,6 +655,29 @@ contract PoolTest is Test {
         
         console.log("Amount in:", amountIn);
         console.log("Amount out:", amountOut);
+    }
+
+    function test_SwapExactInput_WithHooks() public {
+        PoolKey memory pool = test_PoolAndInitialize_Multicall();
+        swapRouter.approveTokenWithPermit2(currency0, 100e18, type(uint48).max);
+        
+        // Set up swap parameters
+        uint128 amountIn = 1e18; // 1 token to swap
+        uint128 minAmountOut = 0; // Minimum amount out (0 for testing)
+        
+        // Execute the swap
+        uint256 amountOut = swapRouter.swapExactInputSingle(
+            pool,
+            amountIn,
+            minAmountOut
+        );
+        
+        console.log("Amount in:", amountIn);
+        console.log("Amount out:", amountOut);
+
+        uint256 postSwap = cHook.afterSwapCount(pool.toId());
+
+        console.log("post swap:", postSwap);
     }
 
     function test_PriceConversion() public pure {
